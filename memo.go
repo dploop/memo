@@ -2,64 +2,41 @@ package memo
 
 import (
 	"sync"
-	"time"
 )
 
-type Memo interface {
-	Get(key interface{}) (interface{}, error)
-	GetWithLoader(key interface{}, loader Loader) (interface{}, error)
-	GetWithLoaderExpiration(key interface{}, loader Loader, expiration time.Duration) (interface{}, error)
-	Set(key interface{}, value interface{})
-	SetWithExpiration(key interface{}, value interface{}, expiration time.Duration)
-}
-
-type memo struct {
+type Memo struct {
 	sync.Mutex
-	defaultExpiration time.Duration
-	defaultLoader     Loader
-	clock             Clock
-	cache             map[interface{}]*item
+	Options
+	cache map[Key]*item
 }
 
 type item struct {
 	sync.Mutex
-	value    interface{}
+	value    Value
 	err      error
 	expireAt int64
 }
 
-func NewMemo(options ...Option) Memo {
-	m := &memo{
-		defaultExpiration: NoExpire,
-		defaultLoader:     nil,
-		clock:             NewRealClock(),
-		cache:             make(map[interface{}]*item),
-	}
-	for _, option := range options {
-		option(m)
+func NewMemo(opts ...Option) *Memo {
+	m := &Memo{
+		Options: newOptions(opts...),
+		cache:   make(map[Key]*item),
 	}
 	return m
 }
 
-func (m *memo) Get(key interface{}) (interface{}, error) {
-	return m.GetWithLoader(key, m.defaultLoader)
-}
-
-func (m *memo) GetWithLoader(key interface{}, loader Loader) (interface{}, error) {
-	return m.GetWithLoaderExpiration(key, loader, m.defaultExpiration)
-}
-
-func (m *memo) GetWithLoaderExpiration(key interface{}, loader Loader, expiration time.Duration) (value interface{}, err error) {
+func (m *Memo) Get(key Key, opts ...Option) (value Value, err error) {
+	o := m.newGetOptions(opts...)
 	m.Lock()
 	i := m.cache[key]
-	if loader == nil {
+	if o.Loader == nil {
 		if i == nil {
 			m.Unlock()
 		} else {
 			m.Unlock()
 			i.Lock()
 			defer i.Unlock()
-			if i.expireAt == 0 || i.expireAt > m.clock.Now().UnixNano() {
+			if i.expireAt == 0 || i.expireAt > m.Clock.Now().UnixNano() {
 				return i.value, i.err
 			}
 		}
@@ -75,26 +52,23 @@ func (m *memo) GetWithLoaderExpiration(key interface{}, loader Loader, expiratio
 			m.Unlock()
 			i.Lock()
 			defer i.Unlock()
-			if i.expireAt == 0 || i.expireAt > m.clock.Now().UnixNano() {
+			if i.expireAt == 0 || i.expireAt > m.Clock.Now().UnixNano() {
 				return i.value, i.err
 			}
 		}
-		value, err = loader(key)
+		value, err = o.Loader(key)
 		i.value, i.err = value, err
-		if expiration == NoExpire {
+		if o.Expiration == NoExpire {
 			i.expireAt = 0
 		} else {
-			i.expireAt = m.clock.Now().Add(expiration).UnixNano()
+			i.expireAt = m.Clock.Now().Add(o.Expiration).UnixNano()
 		}
 	}
 	return value, err
 }
 
-func (m *memo) Set(key interface{}, value interface{}) {
-	m.SetWithExpiration(key, value, m.defaultExpiration)
-}
-
-func (m *memo) SetWithExpiration(key interface{}, value interface{}, expiration time.Duration) {
+func (m *Memo) Set(key Key, value Value, opts ...Option) {
+	o := m.newSetOptions(opts...)
 	m.Lock()
 	i := m.cache[key]
 	if i == nil {
@@ -102,10 +76,10 @@ func (m *memo) SetWithExpiration(key interface{}, value interface{}, expiration 
 		m.cache[key] = i
 	}
 	i.value, i.err = value, nil
-	if expiration == NoExpire {
+	if o.Expiration == NoExpire {
 		i.expireAt = 0
 	} else {
-		i.expireAt = m.clock.Now().Add(expiration).UnixNano()
+		i.expireAt = m.Clock.Now().Add(o.Expiration).UnixNano()
 	}
 	m.Unlock()
 }

@@ -1,2 +1,11 @@
 linters:
   enable-all: true
+  disable:
+    - nestif
+    - wsl
+
+issues:
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - gomnd

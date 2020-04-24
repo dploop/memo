@@ -3,34 +3,80 @@ package memo
 import (
 	"errors"
 	"time"
+
+	"github.com/dploop/memo/clock"
+)
+
+const (
+	DoExpire Expiration = -1
+	NoExpire Expiration = 0
 )
 
 var (
 	ErrNotFound = errors.New("memo: not found")
 )
 
-type Option func(*memo)
-
-const (
-	NoExpire time.Duration = 0
+type (
+	Key        = interface{}
+	Value      = interface{}
+	Clock      = clock.Clock
+	Loader     func(Key) (Value, error)
+	Expiration = time.Duration
 )
 
-func WithDefaultExpiration(defaultExpiration time.Duration) Option {
-	return func(m *memo) {
-		m.defaultExpiration = defaultExpiration
-	}
+type Options struct {
+	Clock      Clock
+	Loader     Loader
+	Expiration Expiration
 }
 
-type Loader func(interface{}) (interface{}, error)
+type Option func(*Options)
 
-func WithDefaultLoader(defaultLoader Loader) Option {
-	return func(m *memo) {
-		m.defaultLoader = defaultLoader
+func newOptions(opts ...Option) Options {
+	o := Options{
+		Clock: clock.NewRealClock(),
 	}
+	for _, opt := range opts {
+		opt(&o)
+	}
+	return o
+}
+
+func (base *Options) newGetOptions(opts ...Option) Options {
+	o := Options{
+		Loader:     base.Loader,
+		Expiration: base.Expiration,
+	}
+	for _, opt := range opts {
+		opt(&o)
+	}
+	return o
+}
+
+func (base *Options) newSetOptions(opts ...Option) Options {
+	o := Options{
+		Expiration: base.Expiration,
+	}
+	for _, opt := range opts {
+		opt(&o)
+	}
+	return o
 }
 
 func WithClock(clock Clock) Option {
-	return func(m *memo) {
-		m.clock = clock
+	return func(o *Options) {
+		o.Clock = clock
+	}
+}
+
+func WithLoader(loader Loader) Option {
+	return func(o *Options) {
+		o.Loader = loader
+	}
+}
+
+func WithExpiration(expiration Expiration) Option {
+	return func(o *Options) {
+		o.Expiration = expiration
 	}
 }

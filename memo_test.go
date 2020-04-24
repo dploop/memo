@@ -1,163 +1,116 @@
 package memo_test
 
 import (
-	"testing"
 	"time"
 
 	"github.com/dploop/memo"
+	"github.com/dploop/memo/clock"
+	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/gomega"
 )
 
-func TestMemo_Simple(t *testing.T) {
-	// Case: a is not in m
-	m := memo.NewMemo()
-	a, err := m.Get("a")
-	if err != memo.ErrNotFound {
-		t.Errorf("err(%v) is expected to be not found", err)
+var _ = Describe("Memo", func() {
+	positive := func(v memo.Value, err error, target interface{}) {
+		Expect(v).To(Equal(target))
+		Expect(err).NotTo(HaveOccurred())
 	}
-	if a != nil {
-		t.Errorf("a(%v) is expected to be nil", a)
+	negative := func(v memo.Value, err error, target interface{}) {
+		Expect(v).To(BeNil())
+		Expect(err).To(MatchError(target))
 	}
-	// Case: a is in m
-	m.Set("a", 1)
-	a, err = m.Get("a")
-	if err != nil {
-		t.Errorf("err(%v) is expected to be nil", err)
-	}
-	if a.(int) != 1 {
-		t.Errorf("a(%v) is expected to be 1", a)
-	}
-}
 
-func TestMemo_Expiration(t *testing.T) {
-	// Case: a is not in m
-	fakeClock := memo.NewFakeClock()
-	m := memo.NewMemo(
-		memo.WithClock(fakeClock),
-		memo.WithDefaultExpiration(10*time.Minute),
-	)
-	a, err := m.Get("a")
-	if err != memo.ErrNotFound {
-		t.Errorf("err(%v) is expected to be not found", err)
-	}
-	if a != nil {
-		t.Errorf("a(%v) is expected to be nil", a)
-	}
-	// Case: a is in m
-	m.Set("a", 1)
-	a, err = m.Get("a")
-	if err != nil {
-		t.Errorf("err(%v) is expected to be nil", err)
-	}
-	if a.(int) != 1 {
-		t.Errorf("a(%v) is expected to be 1", a)
-	}
-	// Case: a is in m
-	fakeClock.Advance(9 * time.Minute)
-	a, err = m.Get("a")
-	if err != nil {
-		t.Errorf("err(%v) is expected to be nil", err)
-	}
-	if a.(int) != 1 {
-		t.Errorf("a(%v) is expected to be 1", a)
-	}
-	// Case: a is not in m
-	fakeClock.Advance(1 * time.Minute)
-	a, err = m.Get("a")
-	if err != memo.ErrNotFound {
-		t.Errorf("err(%v) is expected to be not found", err)
-	}
-	if a != nil {
-		t.Errorf("a(%v) is expected to be nil", a)
-	}
-	// Case: a is in m
-	m.SetWithExpiration("a", 1, 5*time.Minute)
-	a, err = m.Get("a")
-	if err != nil {
-		t.Errorf("err(%v) is expected to be nil", err)
-	}
-	if a.(int) != 1 {
-		t.Errorf("a(%v) is expected to be 1", a)
-	}
-	// Case: a is in m
-	fakeClock.Advance(4 * time.Minute)
-	a, err = m.Get("a")
-	if err != nil {
-		t.Errorf("err(%v) is expected to be nil", err)
-	}
-	if a.(int) != 1 {
-		t.Errorf("a(%v) is expected to be 1", a)
-	}
-	// Case: a is not in m
-	fakeClock.Advance(1 * time.Minute)
-	a, err = m.Get("a")
-	if err != memo.ErrNotFound {
-		t.Errorf("err(%v) is expected to be not found", err)
-	}
-	if a != nil {
-		t.Errorf("a(%v) is expected to be nil", a)
-	}
-}
+	Describe("Simple Memo", func() {
+		It("can get nothing when empty", func() {
+			m := memo.NewMemo()
+			v, err := m.Get("k")
+			negative(v, err, memo.ErrNotFound)
+		})
+		It("can get something when set", func() {
+			m := memo.NewMemo()
+			m.Set("k", "v")
+			v, err := m.Get("k")
+			positive(v, err, "v")
+		})
+	})
 
-func TestMemo_Loader(t *testing.T) {
-	// Case: a is not in m
-	fakeClock := memo.NewFakeClock()
-	loader1 := func(_ interface{}) (interface{}, error) {
-		return 1, nil
+	vLoader := func(memo.Key) (memo.Value, error) {
+		return "v", nil
 	}
-	loader2 := func(_ interface{}) (interface{}, error) {
-		return 2, nil
+	uLoader := func(memo.Key) (memo.Value, error) {
+		return "u", nil
 	}
-	m := memo.NewMemo(
-		memo.WithClock(fakeClock),
-		memo.WithDefaultLoader(loader1),
-	)
-	a, err := m.GetWithLoader("a", nil)
-	if err != memo.ErrNotFound {
-		t.Errorf("err(%v) is expected to be not found", err)
-	}
-	if a != nil {
-		t.Errorf("a(%v) is expected to be nil", a)
-	}
-	// Case: a is in m
-	a, err = m.Get("a")
-	if err != nil {
-		t.Errorf("err(%v) is expected to be nil", err)
-	}
-	if a.(int) != 1 {
-		t.Errorf("a(%v) is expected to be 1", a)
-	}
-	a, err = m.GetWithLoader("a", loader2)
-	if err != nil {
-		t.Errorf("err(%v) is expected to be nil", err)
-	}
-	if a.(int) != 1 {
-		t.Errorf("a(%v) is expected to be 1", a)
-	}
-	// Case: a is not in m
-	m.SetWithExpiration("a", 1, 5*time.Minute)
-	fakeClock.Advance(5 * time.Minute)
-	a, err = m.GetWithLoader("a", nil)
-	if err != memo.ErrNotFound {
-		t.Errorf("err(%v) is expected to be not found", err)
-	}
-	if a != nil {
-		t.Errorf("a(%v) is expected to be nil", a)
-	}
-	// Case: a is in m
-	a, err = m.GetWithLoaderExpiration("a", loader1, 5*time.Minute)
-	if err != nil {
-		t.Errorf("err(%v) is expected to be nil", err)
-	}
-	if a.(int) != 1 {
-		t.Errorf("a(%v) is expected to be 1", a)
-	}
-	// Case: a is not in m
-	fakeClock.Advance(5 * time.Minute)
-	a, err = m.GetWithLoader("a", nil)
-	if err != memo.ErrNotFound {
-		t.Errorf("err(%v) is expected to be not found", err)
-	}
-	if a != nil {
-		t.Errorf("a(%v) is expected to be nil", a)
-	}
-}
+	Describe("Loader Memo", func() {
+		It("can get something with specified loader", func() {
+			m := memo.NewMemo()
+			v, err := m.Get("k", memo.WithLoader(vLoader))
+			positive(v, err, "v")
+		})
+		It("can get something with default loader", func() {
+			m := memo.NewMemo(memo.WithLoader(vLoader))
+			v, err := m.Get("k")
+			positive(v, err, "v")
+		})
+		It("specified loader override default loader", func() {
+			m := memo.NewMemo(memo.WithLoader(vLoader))
+			v, err := m.Get("k", memo.WithLoader(uLoader))
+			positive(v, err, "u")
+		})
+		It("loader will only take effect when needed", func() {
+			m := memo.NewMemo()
+			v, err := m.Get("k", memo.WithLoader(vLoader))
+			positive(v, err, "v")
+			v, err = m.Get("k", memo.WithLoader(uLoader))
+			positive(v, err, "v")
+		})
+	})
+
+	Describe("Expiration Memo", func() {
+		var fakeClock *clock.FakeClock
+		BeforeEach(func() {
+			fakeClock = clock.NewFakeClock()
+		})
+		It("can get something when not expired", func() {
+			m := memo.NewMemo(memo.WithClock(fakeClock))
+			m.Set("k", "v", memo.WithExpiration(time.Minute))
+			fakeClock.Advance(time.Minute - time.Second)
+			v, err := m.Get("k")
+			positive(v, err, "v")
+		})
+		It("expire something through specified expiration", func() {
+			m := memo.NewMemo(memo.WithClock(fakeClock))
+			m.Set("k", "v", memo.WithExpiration(time.Minute))
+			fakeClock.Advance(time.Minute)
+			v, err := m.Get("k")
+			negative(v, err, memo.ErrNotFound)
+		})
+		It("expire something through default expiration", func() {
+			m := memo.NewMemo(memo.WithClock(fakeClock), memo.WithExpiration(time.Minute))
+			m.Set("k", "v")
+			fakeClock.Advance(time.Minute)
+			v, err := m.Get("k")
+			negative(v, err, memo.ErrNotFound)
+		})
+		It("specified expiration will override default expiration", func() {
+			m := memo.NewMemo(memo.WithClock(fakeClock), memo.WithExpiration(time.Hour))
+			m.Set("k", "v", memo.WithExpiration(time.Minute))
+			fakeClock.Advance(time.Minute)
+			v, err := m.Get("k")
+			negative(v, err, memo.ErrNotFound)
+		})
+	})
+
+	Describe("Complicated Memo", func() {
+		var fakeClock *clock.FakeClock
+		BeforeEach(func() {
+			fakeClock = clock.NewFakeClock()
+		})
+		It("can get nothing when loaded but expired", func() {
+			m := memo.NewMemo(memo.WithClock(fakeClock))
+			v, err := m.Get("k", memo.WithLoader(vLoader), memo.WithExpiration(time.Minute))
+			positive(v, err, "v")
+			fakeClock.Advance(time.Minute)
+			v, err = m.Get("k")
+			negative(v, err, memo.ErrNotFound)
+		})
+	})
+})
