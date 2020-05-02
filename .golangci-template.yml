@@ -1,0 +1,22 @@
+linters:
+  disable-all: true
+  enable:
+  {{- range .LinterList }}
+    - {{ . }}
+  {{- end }}
+
+run:
+  timeout: 5m
+  tests: false
+
+linters-settings:
+  cyclop:
+    max-complexity: 20
+  nestif:
+    min-complexity: 20
+
+issues:
+  exclude-rules:
+    - linters:
+        - exhaustive
+      text: "missing cases in switch of type"

@@ -7,13 +7,9 @@ import (
 	"github.com/dploop/memo/clock"
 )
 
-const (
-	DoExpire Expiration = -1
-	NoExpire Expiration = 0
-)
-
 var (
-	ErrNotFound = errors.New("memo: not found")
+	ErrNotFound          = errors.New("memo: not found")
+	ErrInvalidExpiration = errors.New("memo: invalid expiration")
 )
 
 type (
@@ -24,59 +20,74 @@ type (
 	Expiration = time.Duration
 )
 
-type Options struct {
-	Clock      Clock
-	Loader     Loader
-	Expiration Expiration
+type options struct {
+	clock      Clock
+	loader     Loader
+	expiration Expiration
 }
 
-type Option func(*Options)
+type Option func(*options)
 
-func newOptions(opts ...Option) Options {
-	o := Options{
-		Clock: clock.NewRealClock(),
+func newOptions(opts ...Option) options {
+	o := options{
+		clock: clock.NewRealClock(),
 	}
 	for _, opt := range opts {
 		opt(&o)
 	}
+
+	if o.expiration < 0 {
+		panic(ErrInvalidExpiration)
+	}
+
 	return o
 }
 
-func (base *Options) newGetOptions(opts ...Option) Options {
-	o := Options{
-		Loader:     base.Loader,
-		Expiration: base.Expiration,
+func (base *options) newGetOptions(opts ...Option) options {
+	o := options{
+		loader:     base.loader,
+		expiration: base.expiration,
 	}
 	for _, opt := range opts {
 		opt(&o)
 	}
+
+	if o.expiration < 0 {
+		panic(ErrInvalidExpiration)
+	}
+
 	return o
 }
 
-func (base *Options) newSetOptions(opts ...Option) Options {
-	o := Options{
-		Expiration: base.Expiration,
+func (base *options) newSetOptions(opts ...Option) options {
+	o := options{
+		expiration: base.expiration,
 	}
 	for _, opt := range opts {
 		opt(&o)
 	}
+
+	if o.expiration < 0 {
+		panic(ErrInvalidExpiration)
+	}
+
 	return o
 }
 
 func WithClock(clock Clock) Option {
-	return func(o *Options) {
-		o.Clock = clock
+	return func(o *options) {
+		o.clock = clock
 	}
 }
 
 func WithLoader(loader Loader) Option {
-	return func(o *Options) {
-		o.Loader = loader
+	return func(o *options) {
+		o.loader = loader
 	}
 }
 
 func WithExpiration(expiration Expiration) Option {
-	return func(o *Options) {
-		o.Expiration = expiration
+	return func(o *options) {
+		o.expiration = expiration
 	}
 }

@@ -1,0 +1,5 @@
+dupl
+exhaustivestruct
+interfacer
+maligned
+forcetypeassert

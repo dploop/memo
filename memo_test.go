@@ -1,6 +1,10 @@
 package memo_test
 
 import (
+	"runtime"
+	"sync"
+	"sync/atomic"
+	"testing"
 	"time"
 
 	"github.com/dploop/memo"
@@ -112,5 +116,80 @@ var _ = Describe("Memo", func() {
 			v, err = m.Get("k")
 			negative(v, err, memo.ErrNotFound)
 		})
+		It("access a key concurrently will only load once", func() {
+			var counter int32
+			sLoader := func(memo.Key) (memo.Value, error) {
+				time.Sleep(time.Second)
+				atomic.AddInt32(&counter, 1)
+				return "s", nil
+			}
+			m := memo.NewMemo(memo.WithClock(fakeClock), memo.WithLoader(sLoader))
+			start := time.Now()
+			var wg sync.WaitGroup
+			for i := 0; i < 10000; i++ {
+				k := i % 100
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					_, _ = m.Get(k)
+				}()
+			}
+			wg.Wait()
+			Expect(counter).To(BeEquivalentTo(100))
+			Expect(time.Since(start)).To(
+				BeNumerically("~", time.Second, time.Second/10),
+			)
+		})
 	})
 })
+
+func BenchmarkMemo_Get(b *testing.B) {
+	m := memo.NewMemo()
+	m.Set("k", "v")
+	for i := 0; i < b.N; i++ {
+		_, _ = m.Get("k")
+	}
+}
+
+func BenchmarkMemo_Set(b *testing.B) {
+	m := memo.NewMemo()
+	for i := 0; i < b.N; i++ {
+		m.Set("k", "v")
+	}
+	_, _ = m.Get("k")
+}
+
+func BenchmarkMemo_GetConcurrent(b *testing.B) {
+	m := memo.NewMemo()
+	m.Set("k", "v")
+	var wg sync.WaitGroup
+	concurrency := runtime.NumCPU()
+	each := b.N / concurrency
+	for i := 0; i < concurrency; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < each; j++ {
+				_, _ = m.Get("k")
+			}
+		}()
+	}
+	wg.Wait()
+}
+
+func BenchmarkMemo_SetConcurrent(b *testing.B) {
+	m := memo.NewMemo()
+	var wg sync.WaitGroup
+	concurrency := runtime.NumCPU()
+	each := b.N / concurrency
+	for i := 0; i < concurrency; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < each; j++ {
+				m.Set("k", "v")
+			}
+		}()
+	}
+	wg.Wait()
+}

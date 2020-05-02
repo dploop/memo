@@ -1,6 +1,7 @@
 package clock_test
 
 import (
+	"testing"
 	"time"
 
 	"github.com/dploop/memo/clock"
@@ -10,23 +11,42 @@ import (
 
 var _ = Describe("Clock", func() {
 	Describe("Real Clock", func() {
-		It("should be close to the current time", func() {
+		It("should be a monotonic clock", func() {
 			realClock := clock.NewRealClock()
-			now := realClock.Now()
-			current := time.Now()
-			Expect(current.Sub(now)).To(
-				BeNumerically("~", 0, time.Second),
-			)
+			u := realClock.Now()
+			v := realClock.Now()
+			Expect(v - u).To(BeNumerically(">=", 0))
 		})
 	})
 	Describe("Fake Clock", func() {
-		It("should advance to the future time", func() {
+		It("should advance to the future", func() {
 			fakeClock := clock.NewFakeClock()
-			now := fakeClock.Now()
+			u := fakeClock.Now()
 			d := 7 * time.Minute
 			fakeClock.Advance(d)
-			future := fakeClock.Now()
-			Expect(future.Sub(now)).To(Equal(d))
+			v := fakeClock.Now()
+			Expect(v - u).To(BeNumerically("==", d))
 		})
 	})
 })
+
+func BenchmarkTimeClock(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		_ = time.Now()
+	}
+}
+
+func BenchmarkRealClock(b *testing.B) {
+	realClock := clock.NewRealClock()
+	for i := 0; i < b.N; i++ {
+		_ = realClock.Now()
+	}
+}
+
+func BenchmarkFakeClock(b *testing.B) {
+	fakeClock := clock.NewFakeClock()
+	for i := 0; i < b.N; i++ {
+		fakeClock.Advance(time.Nanosecond)
+		_ = fakeClock.Now()
+	}
+}
