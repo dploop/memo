@@ -14,26 +14,42 @@ import (
 )
 
 var _ = Describe("Memo", func() {
-	positive := func(v memo.Value, err error, target interface{}) {
-		Expect(v).To(Equal(target))
-		Expect(err).NotTo(HaveOccurred())
-	}
-	negative := func(v memo.Value, err error, target interface{}) {
-		Expect(v).To(BeNil())
-		Expect(err).To(MatchError(target))
+	expect := func(v memo.Value, err error) func(memo.Value, error) {
+		return func(expectedV memo.Value, expectedErr error) {
+			if expectedV == nil {
+				Expect(v).To(BeNil())
+			} else {
+				Expect(v).To(Equal(expectedV))
+			}
+			if expectedErr == nil {
+				Expect(err).NotTo(HaveOccurred())
+			} else {
+				Expect(err).To(MatchError(expectedErr))
+			}
+		}
 	}
 
 	Describe("Simple Memo", func() {
 		It("can get nothing when empty", func() {
 			m := memo.NewMemo()
-			v, err := m.Get("k")
-			negative(v, err, memo.ErrNotFound)
+			expect(m.Get("k"))(nil, memo.ErrNotFound)
 		})
 		It("can get something when set", func() {
 			m := memo.NewMemo()
 			m.Set("k", "v")
-			v, err := m.Get("k")
-			positive(v, err, "v")
+			expect(m.Get("k"))("v", nil)
+		})
+		It("can get nothing when set but deleted", func() {
+			m := memo.NewMemo()
+			m.Set("k", "v")
+			expect(m.Get("k"))("v", nil)
+			m.Del("k")
+			expect(m.Get("k"))(nil, memo.ErrNotFound)
+			m.Del("k")
+			expect(m.Get("k"))(nil, memo.ErrNotFound)
+			m.Set("k", "v", memo.SetWithExpiration(time.Minute))
+			m.Del("k")
+			expect(m.Get("k"))(nil, memo.ErrNotFound)
 		})
 	})
 
@@ -46,25 +62,20 @@ var _ = Describe("Memo", func() {
 	Describe("Loader Memo", func() {
 		It("can get something with specified loader", func() {
 			m := memo.NewMemo()
-			v, err := m.Get("k", memo.WithLoader(vLoader))
-			positive(v, err, "v")
+			expect(m.Get("k", memo.GetWithLoader(vLoader)))("v", nil)
 		})
 		It("can get something with default loader", func() {
 			m := memo.NewMemo(memo.WithLoader(vLoader))
-			v, err := m.Get("k")
-			positive(v, err, "v")
+			expect(m.Get("k"))("v", nil)
 		})
 		It("specified loader override default loader", func() {
 			m := memo.NewMemo(memo.WithLoader(vLoader))
-			v, err := m.Get("k", memo.WithLoader(uLoader))
-			positive(v, err, "u")
+			expect(m.Get("k", memo.GetWithLoader(uLoader)))("u", nil)
 		})
 		It("loader will only take effect when needed", func() {
 			m := memo.NewMemo()
-			v, err := m.Get("k", memo.WithLoader(vLoader))
-			positive(v, err, "v")
-			v, err = m.Get("k", memo.WithLoader(uLoader))
-			positive(v, err, "v")
+			expect(m.Get("k", memo.GetWithLoader(vLoader)))("v", nil)
+			expect(m.Get("k", memo.GetWithLoader(uLoader)))("v", nil)
 		})
 	})
 
@@ -75,31 +86,79 @@ var _ = Describe("Memo", func() {
 		})
 		It("can get something when not expired", func() {
 			m := memo.NewMemo(memo.WithClock(fakeClock))
-			m.Set("k", "v", memo.WithExpiration(time.Minute))
+			m.Set("k", "v", memo.SetWithExpiration(time.Minute))
 			fakeClock.Advance(time.Minute - time.Second)
-			v, err := m.Get("k")
-			positive(v, err, "v")
+			expect(m.Get("k"))("v", nil)
 		})
 		It("expire something through specified expiration", func() {
 			m := memo.NewMemo(memo.WithClock(fakeClock))
-			m.Set("k", "v", memo.WithExpiration(time.Minute))
+			m.Set("k", "v", memo.SetWithExpiration(time.Minute))
 			fakeClock.Advance(time.Minute)
-			v, err := m.Get("k")
-			negative(v, err, memo.ErrNotFound)
+			expect(m.Get("k"))(nil, memo.ErrNotFound)
 		})
 		It("expire something through default expiration", func() {
 			m := memo.NewMemo(memo.WithClock(fakeClock), memo.WithExpiration(time.Minute))
 			m.Set("k", "v")
 			fakeClock.Advance(time.Minute)
-			v, err := m.Get("k")
-			negative(v, err, memo.ErrNotFound)
+			expect(m.Get("k"))(nil, memo.ErrNotFound)
 		})
 		It("specified expiration will override default expiration", func() {
 			m := memo.NewMemo(memo.WithClock(fakeClock), memo.WithExpiration(time.Hour))
-			m.Set("k", "v", memo.WithExpiration(time.Minute))
+			m.Set("k", "v", memo.SetWithExpiration(time.Minute))
 			fakeClock.Advance(time.Minute)
-			v, err := m.Get("k")
-			negative(v, err, memo.ErrNotFound)
+			expect(m.Get("k"))(nil, memo.ErrNotFound)
+		})
+		It("specified expiration will override specified expiration", func() {
+			m := memo.NewMemo(memo.WithClock(fakeClock))
+			m.Set("k", "v")
+			m.Set("k", "v", memo.SetWithExpiration(time.Minute))
+			fakeClock.Advance(time.Minute)
+			expect(m.Get("k"))(nil, memo.ErrNotFound)
+			m.Set("k", "v", memo.SetWithExpiration(time.Minute))
+			m.Set("k", "v")
+			fakeClock.Advance(time.Minute)
+			expect(m.Get("k"))("v", nil)
+			m.Set("k", "v", memo.SetWithExpiration(1*time.Minute))
+			m.Set("k", "v", memo.SetWithExpiration(2*time.Minute))
+			fakeClock.Advance(time.Minute)
+			expect(m.Get("k"))("v", nil)
+			fakeClock.Advance(time.Minute)
+			expect(m.Get("k"))(nil, memo.ErrNotFound)
+		})
+		It("expiration can be accurate to the key level", func() {
+			m := memo.NewMemo(memo.WithClock(fakeClock))
+			m.Set("k1", "v1", memo.SetWithExpiration(1*time.Minute))
+			m.Set("k2", "v2", memo.SetWithExpiration(2*time.Minute))
+			expect(m.Get("k1"))("v1", nil)
+			expect(m.Get("k2"))("v2", nil)
+			fakeClock.Advance(time.Minute)
+			expect(m.Get("k1"))(nil, memo.ErrNotFound)
+			expect(m.Get("k2"))("v2", nil)
+			fakeClock.Advance(time.Minute)
+			expect(m.Get("k1"))(nil, memo.ErrNotFound)
+			expect(m.Get("k2"))(nil, memo.ErrNotFound)
+		})
+		It("should panic when expiration is invalid", func() {
+			func() {
+				defer func() {
+					Expect(recover()).To(MatchError(memo.ErrInvalidExpiration))
+				}()
+				_ = memo.NewMemo(memo.WithExpiration(-1))
+			}()
+			func() {
+				defer func() {
+					Expect(recover()).To(MatchError(memo.ErrInvalidExpiration))
+				}()
+				m := memo.NewMemo()
+				_, _ = m.Get("k", memo.GetWithExpiration(-1))
+			}()
+			func() {
+				defer func() {
+					Expect(recover()).To(MatchError(memo.ErrInvalidExpiration))
+				}()
+				m := memo.NewMemo()
+				m.Set("k", "v", memo.SetWithExpiration(-1))
+			}()
 		})
 	})
 
@@ -110,11 +169,9 @@ var _ = Describe("Memo", func() {
 		})
 		It("can get nothing when loaded but expired", func() {
 			m := memo.NewMemo(memo.WithClock(fakeClock))
-			v, err := m.Get("k", memo.WithLoader(vLoader), memo.WithExpiration(time.Minute))
-			positive(v, err, "v")
+			expect(m.Get("k", memo.GetWithLoader(vLoader), memo.GetWithExpiration(time.Minute)))("v", nil)
 			fakeClock.Advance(time.Minute)
-			v, err = m.Get("k")
-			negative(v, err, memo.ErrNotFound)
+			expect(m.Get("k"))(nil, memo.ErrNotFound)
 		})
 		It("access a key concurrently will only load once", func() {
 			var counter int32

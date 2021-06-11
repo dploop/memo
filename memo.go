@@ -1,52 +1,33 @@
 package memo
 
 import (
+	"container/heap"
 	"sync"
-
-	"github.com/dploop/memo/stl/multidict"
-	"github.com/dploop/memo/stl/types"
 )
 
 type Memo struct {
-	mu    sync.Mutex
-	o     options
-	cache map[Key]*entry
-	timer *multidict.Dict
-}
-
-type entry struct {
-	mu       sync.Mutex
-	value    Value
-	err      error
-	expireAt int64
+	mu sync.Mutex
+	o  options
+	c  *cache
 }
 
 func NewMemo(opts ...Option) *Memo {
-	keyComp := func(x types.Data, y types.Data) bool {
-		return x.(int64) < y.(int64)
-	}
-
-	m := &Memo{
-		o:     newOptions(opts...),
-		cache: make(map[Key]*entry),
-		timer: multidict.New(keyComp),
-	}
-
-	return m
+	return &Memo{o: newOptions(opts...), c: newCache()}
 }
 
-func (m *Memo) Get(key Key, opts ...Option) (Value, error) {
+func (m *Memo) Get(key Key, opts ...GetOption) (Value, error) {
 	o := m.o.newGetOptions(opts...)
-	m.mu.Lock()
 	now := m.o.clock.Now()
-	m.cleanup(now)
 
 	var expireAt int64
 	if o.expiration != 0 {
 		expireAt = now + int64(o.expiration)
 	}
 
-	e := m.cache[key]
+	m.mu.Lock()
+	m.cleanup(now)
+
+	e := m.c.dict[key]
 	if e != nil {
 		m.mu.Unlock()
 		e.mu.Lock()
@@ -61,9 +42,12 @@ func (m *Memo) Get(key Key, opts ...Option) (Value, error) {
 		return nil, ErrNotFound
 	}
 
-	e = &entry{expireAt: expireAt}
-	m.cache[key] = e
-	m.timerInsert(e.expireAt, key)
+	e = newEntry()
+	m.c.dict[key] = e
+
+	if expireAt != zeroExpireAt {
+		heap.Push(m.c, node{key: key, expireAt: expireAt})
+	}
 
 	e.mu.Lock()
 	m.mu.Unlock()
@@ -73,31 +57,41 @@ func (m *Memo) Get(key Key, opts ...Option) (Value, error) {
 	return e.value, e.err
 }
 
-func (m *Memo) Set(key Key, value Value, opts ...Option) {
+func (m *Memo) Set(key Key, value Value, opts ...SetOption) {
 	o := m.o.newSetOptions(opts...)
-	m.mu.Lock()
 	now := m.o.clock.Now()
-	m.cleanup(now)
 
 	var expireAt int64
 	if o.expiration != 0 {
 		expireAt = now + int64(o.expiration)
 	}
 
-	e := m.cache[key]
+	m.mu.Lock()
+	m.cleanup(now)
+
+	e := m.c.dict[key]
 	if e == nil {
-		e = &entry{value: value, expireAt: expireAt}
-		m.cache[key] = e
-		m.timerInsert(e.expireAt, key)
+		e = newEntry()
+		e.value = value
+		m.c.dict[key] = e
+
+		if expireAt != zeroExpireAt {
+			heap.Push(m.c, node{key: key, expireAt: expireAt})
+		}
+
 		m.mu.Unlock()
 
 		return
 	}
 
-	if e.expireAt != expireAt {
-		m.timerErase(e.expireAt, key)
-		e.expireAt = expireAt
-		m.timerInsert(e.expireAt, key)
+	switch {
+	case e.position == zeroPosition && expireAt != zeroExpireAt:
+		heap.Push(m.c, node{key: key, expireAt: expireAt})
+	case e.position != zeroPosition && expireAt == zeroExpireAt:
+		heap.Remove(m.c, e.position)
+	case e.position != zeroPosition && m.c.heap[e.position].expireAt != expireAt:
+		m.c.heap[e.position].expireAt = expireAt
+		heap.Fix(m.c, e.position)
 	}
 
 	m.mu.Unlock()
@@ -107,53 +101,94 @@ func (m *Memo) Set(key Key, value Value, opts ...Option) {
 }
 
 func (m *Memo) Del(key Key) {
+	now := m.o.clock.Now()
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	now := m.o.clock.Now()
 	m.cleanup(now)
 
-	e := m.cache[key]
+	e := m.c.dict[key]
 	if e == nil {
 		return
 	}
 
-	delete(m.cache, key)
-	m.timerErase(e.expireAt, key)
+	if e.position != zeroPosition {
+		heap.Remove(m.c, e.position)
+	}
+
+	delete(m.c.dict, key)
 }
 
 func (m *Memo) cleanup(now int64) {
-	i, last := m.timer.Begin(), m.timer.End()
-	for !i.ImplEqual(last) {
-		pair := i.Read().(multidict.Value)
-		if pair.Key.(int64) > now {
+	for m.c.heapSize != 0 {
+		top := m.c.heap[0]
+		if top.expireAt > now {
 			break
 		}
 
-		delete(m.cache, pair.Mapped)
-		i = m.timer.Erase(i)
+		_ = heap.Pop(m.c)
+		delete(m.c.dict, top.key)
 	}
 }
 
-func (m *Memo) timerInsert(expireAt int64, key Key) {
-	if expireAt == 0 {
-		return
-	}
-
-	m.timer.Insert(expireAt, key)
+type cache struct {
+	dict     map[Key]*entry
+	heap     []node
+	heapSize int
 }
 
-func (m *Memo) timerErase(expireAt int64, key Key) {
-	if expireAt == 0 {
-		return
+func newCache() *cache {
+	return &cache{dict: make(map[Key]*entry)}
+}
+
+const zeroPosition = -1
+
+type entry struct {
+	mu       sync.Mutex
+	position int
+	value    Value
+	err      error
+}
+
+func newEntry() *entry {
+	return &entry{position: zeroPosition}
+}
+
+const zeroExpireAt = 0
+
+type node struct {
+	key      Key
+	expireAt int64
+}
+
+func (c *cache) Len() int {
+	return c.heapSize
+}
+
+func (c *cache) Less(i, j int) bool {
+	return c.heap[i].expireAt < c.heap[j].expireAt
+}
+
+func (c *cache) Swap(i, j int) {
+	if i != j {
+		c.heap[i], c.heap[j] = c.heap[j], c.heap[i]
+		c.dict[c.heap[i].key].position = i
+		c.dict[c.heap[j].key].position = j
+	}
+}
+
+func (c *cache) Push(x interface{}) {
+	if c.heapSize == len(c.heap) {
+		c.heap = append(c.heap, node{})
 	}
 
-	i, last := m.timer.EqualRange(expireAt)
-	for ; !i.ImplEqual(last); i = i.ImplNext() {
-		pair := i.Read().(multidict.Value)
-		if pair.Mapped == key {
-			break
-		}
-	}
+	c.heap[c.heapSize] = x.(node)
+	c.dict[c.heap[c.heapSize].key].position = c.heapSize
+	c.heapSize++
+}
 
-	_ = m.timer.Erase(i)
+func (c *cache) Pop() interface{} {
+	c.heapSize--
+	c.dict[c.heap[c.heapSize].key].position = zeroPosition
+
+	return c.heap[c.heapSize]
 }
