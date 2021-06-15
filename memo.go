@@ -15,7 +15,7 @@ func NewMemo(opts ...Option) *Memo {
 	return &Memo{o: newOptions(opts...), c: newCache()}
 }
 
-func (m *Memo) Get(key Key, opts ...GetOption) (Value, error) {
+func (m *Memo) Get(k Key, opts ...GetOption) (Value, error) {
 	o := m.o.newGetOptions(opts...)
 	now := m.o.clock.Now()
 
@@ -27,7 +27,7 @@ func (m *Memo) Get(key Key, opts ...GetOption) (Value, error) {
 	m.mu.Lock()
 	m.cleanup(now)
 
-	e := m.c.dict[key]
+	e := m.c.dictGet(k)
 	if e != nil {
 		m.mu.Unlock()
 		e.mu.Lock()
@@ -43,21 +43,18 @@ func (m *Memo) Get(key Key, opts ...GetOption) (Value, error) {
 	}
 
 	e = newEntry()
-	m.c.dict[key] = e
-
-	if expireAt != zeroExpireAt {
-		heap.Push(m.c, node{key: key, expireAt: expireAt})
-	}
+	m.c.dictSet(k, e)
+	m.c.heapPush(node{key: k, expireAt: expireAt})
 
 	e.mu.Lock()
 	m.mu.Unlock()
 	defer e.mu.Unlock()
-	e.value, e.err = o.loader(key)
+	e.value, e.err = o.loader(k)
 
 	return e.value, e.err
 }
 
-func (m *Memo) Set(key Key, value Value, opts ...SetOption) {
+func (m *Memo) Set(k Key, v Value, opts ...SetOption) {
 	o := m.o.newSetOptions(opts...)
 	now := m.o.clock.Now()
 
@@ -69,64 +66,49 @@ func (m *Memo) Set(key Key, value Value, opts ...SetOption) {
 	m.mu.Lock()
 	m.cleanup(now)
 
-	e := m.c.dict[key]
+	e := m.c.dictGet(k)
 	if e == nil {
 		e = newEntry()
-		e.value = value
-		m.c.dict[key] = e
-
-		if expireAt != zeroExpireAt {
-			heap.Push(m.c, node{key: key, expireAt: expireAt})
-		}
-
+		e.value = v
+		m.c.dictSet(k, e)
+		m.c.heapPush(node{key: k, expireAt: expireAt})
 		m.mu.Unlock()
 
 		return
 	}
 
-	switch {
-	case e.position == zeroPosition && expireAt != zeroExpireAt:
-		heap.Push(m.c, node{key: key, expireAt: expireAt})
-	case e.position != zeroPosition && expireAt == zeroExpireAt:
-		heap.Remove(m.c, e.position)
-	case e.position != zeroPosition && m.c.heap[e.position].expireAt != expireAt:
-		m.c.heap[e.position].expireAt = expireAt
-		heap.Fix(m.c, e.position)
-	}
+	m.c.heapFix(e.position, node{key: k, expireAt: expireAt})
 
 	m.mu.Unlock()
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.value, e.err = value, nil
+	e.value, e.err = v, nil
 }
 
-func (m *Memo) Del(key Key) {
+func (m *Memo) Del(k Key) {
 	now := m.o.clock.Now()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.cleanup(now)
 
-	e := m.c.dict[key]
+	e := m.c.dictGet(k)
 	if e == nil {
 		return
 	}
 
-	if e.position != zeroPosition {
-		heap.Remove(m.c, e.position)
-	}
-
-	delete(m.c.dict, key)
+	m.c.heapRemove(e.position)
+	m.c.dictDel(k)
 }
 
 func (m *Memo) cleanup(now int64) {
-	for m.c.heapSize != 0 {
-		top := m.c.heap[0]
+	for !m.c.heapEmpty() {
+		top := m.c.heapTop()
 		if top.expireAt > now {
 			break
 		}
 
-		_ = heap.Pop(m.c)
-		delete(m.c.dict, top.key)
+		m.c.heapPop()
+		m.c.dictDel(top.key)
 	}
 }
 
@@ -160,6 +142,54 @@ type node struct {
 	expireAt int64
 }
 
+func newNode() node {
+	return node{}
+}
+
+func (c *cache) dictGet(k Key) *entry {
+	return c.dict[k]
+}
+
+func (c *cache) dictSet(k Key, e *entry) {
+	c.dict[k] = e
+}
+
+func (c *cache) dictDel(k Key) {
+	delete(c.dict, k)
+}
+
+func (c *cache) heapEmpty() bool {
+	return c.heapSize == 0
+}
+
+func (c *cache) heapTop() node {
+	return c.heap[0]
+}
+
+func (c *cache) heapPop() {
+	heap.Pop(c)
+}
+
+func (c *cache) heapPush(n node) {
+	c.heapFix(zeroPosition, n)
+}
+
+func (c *cache) heapRemove(i int) {
+	c.heapFix(i, node{})
+}
+
+func (c *cache) heapFix(i int, n node) {
+	switch {
+	case i == zeroPosition && n.expireAt != zeroExpireAt:
+		heap.Push(c, n)
+	case i != zeroPosition && n.expireAt == zeroExpireAt:
+		heap.Remove(c, i)
+	case i != zeroPosition && c.heap[i].expireAt != n.expireAt:
+		c.heap[i].expireAt = n.expireAt
+		heap.Fix(c, i)
+	}
+}
+
 func (c *cache) Len() int {
 	return c.heapSize
 }
@@ -176,12 +206,12 @@ func (c *cache) Swap(i, j int) {
 	}
 }
 
-func (c *cache) Push(x interface{}) {
+func (c *cache) Push(n interface{}) {
 	if c.heapSize == len(c.heap) {
-		c.heap = append(c.heap, node{})
+		c.heap = append(c.heap, newNode())
 	}
 
-	c.heap[c.heapSize] = x.(node)
+	c.heap[c.heapSize] = n.(node)
 	c.dict[c.heap[c.heapSize].key].position = c.heapSize
 	c.heapSize++
 }
